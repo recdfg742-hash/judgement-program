@@ -16,14 +16,20 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
           pip install pyinstaller
 
       - name: Build exe
-        run: pyinstaller --noconfirm --onedir --windowed --name LoadingJudge loading_judge_app.py
+        run: |
+          pyinstaller --noconfirm --onedir --windowed `
+            --collect-all torchvision `
+            --collect-all torch `
+            --name LoadingJudge `
+            loading_judge_app.py
 
       - uses: actions/upload-artifact@v4
         with:
