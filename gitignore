@@ -1,0 +1,13 @@
+# 사진/결과/학습 모델은 저장소에 올리지 않음
+judge_output/
+models/
+*.jpg
+*.jpeg
+*.png
+*.xlsx
+loading_judge_cfg.json
+# 빌드 산출물
+build/
+dist/
+*.spec
+__pycache__/
