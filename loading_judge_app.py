@@ -4,7 +4,7 @@ loading_judge_app.py - 적재 판정 테스트 프로그램 (규칙 기반 + 딥
 
 [사용 순서]
  1) OK 폴더 / NG 폴더 지정 (예: OK 50장, NG 30장)
- 2) [ROI 지정] : 박스 '내부'(슬롯 줄무늬가 보이는 영역)를 드래그 후 Enter  (최초 1회, 카메라 구도 바뀌면 재지정)
+ 2) [ROI 지정] : 박스 '내부'(슬롯 줄무늬가 보이는 영역)를 드래그 후 Enter (최초 1회, 카메라 구도 바뀌면 재지정)
  3) [학습 시작] : 규칙 기준(각도/에너지) 자동 보정 + CNN(MobileNetV3-small) 전이학습
  4) [사진 업로드 및 판정] : 판정할 사진 여러 장 선택 -> 자동 판정
       저장 위치  : <저장폴더>/OK/<YYYY-MM-DD>/원본파일명.jpg
@@ -18,6 +18,20 @@ loading_judge_app.py - 적재 판정 테스트 프로그램 (규칙 기반 + 딥
 """
 import os
 import sys
+import io
+
+# ------------------------------------------------------------------ PyInstaller windowed 모드 스트림 보호
+class NullWriter:
+    def write(self, s):
+        pass
+    def flush(self):
+        pass
+
+if sys.stdout is None:
+    sys.stdout = NullWriter()
+if sys.stderr is None:
+    sys.stderr = NullWriter()
+
 import json
 import glob
 import math
@@ -159,7 +173,9 @@ def calibrate_rule(ok_files, roi):
         if img is None:
             continue
         ft = rule_features(crop_roi(img, roi))
-        th.append(ft["theta"]); co.append(ft["coherence"]); en.append(ft["energy"])
+        th.append(ft["theta"])
+        co.append(ft["coherence"])
+        en.append(ft["energy"])
     if not th:
         raise RuntimeError("OK 폴더에서 읽을 수 있는 이미지가 없습니다.")
     th, co, en = np.array(th), np.array(co), np.array(en)
@@ -182,7 +198,7 @@ def train_cnn(ok_files, ng_files, roi, log, epochs=25, batch=16):
     from torchvision import models, transforms as T
 
     def split(files):
-        files = sorted(files)               # 파일명(날짜/일련번호) 순 = 시간순 -> 뒤 20% 검증
+        files = sorted(files)               # 파일명 순 = 시간순 -> 뒤 20% 검증
         if len(files) < 5:
             return files, []
         k = max(1, int(len(files) * 0.2))
@@ -205,7 +221,7 @@ def train_cnn(ok_files, ng_files, roi, log, epochs=25, batch=16):
         T.RandomApply([T.GaussianBlur(5, (0.1, 1.5))], p=0.3),
         T.ToTensor(), norm,
         T.RandomErasing(p=0.3, scale=(0.02, 0.15)),
-    ])   # 반전/90도 회전 증강은 사용하지 않음 (방향 자체가 판정 대상)
+    ])
     tf_va = T.Compose([T.ToPILImage(), T.ToTensor(), norm])
 
     class DS(Dataset):
@@ -227,9 +243,12 @@ def train_cnn(ok_files, ng_files, roi, log, epochs=25, batch=16):
     dl_va = DataLoader(DS(va, tf_va), batch_size=batch, shuffle=False, num_workers=0)
 
     try:
-        model = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
+        # progress=False 로 진행률 바 터미널 출력 에러 방지
+        weights = models.MobileNet_V3_Small_Weights.DEFAULT
+        model = models.mobilenet_v3_small(weights=weights, progress=False)
     except Exception as e:
         raise RuntimeError(f"사전학습 가중치를 받지 못했습니다 (최초 1회 인터넷 필요): {e}")
+        
     model.classifier[3] = nn.Linear(model.classifier[3].in_features, 2)
     model.to(dev)
 
@@ -385,7 +404,6 @@ class App:
         self.refresh_status()
         root.after(100, self.poll)
 
-    # ---------- UI
     def build(self):
         pad = {"padx": 8, "pady": 3}
 
@@ -442,7 +460,6 @@ class App:
         self.txt = tk.Text(f3, height=10, font=("Consolas", 9))
         self.txt.pack(fill=tk.BOTH, expand=True)
 
-    # ---------- 공통
     def log(self, msg):
         self.q.put(("log", msg))
 
@@ -497,7 +514,6 @@ class App:
             pass
         self.root.after(100, self.poll)
 
-    # ---------- ROI
     def on_roi(self):
         path = filedialog.askopenfilename(
             title="ROI 지정용 샘플 사진 선택 (OK 사진 권장)", initialdir=self.var_ok.get() or BASE_DIR,
@@ -516,12 +532,11 @@ class App:
         if rw == 0 or rh == 0:
             return
         self.cfg["roi"] = [round(x / w, 4), round(y / h, 4), round((x + rw) / w, 4), round((y + rh) / h, 4)]
-        self.cfg["ref_theta_deg"] = None        # ROI 가 바뀌면 재학습(재보정) 필요
+        self.cfg["ref_theta_deg"] = None
         save_cfg(self.cfg)
         self.refresh_status()
         self.log(f"ROI 저장: {self.cfg['roi']}  -> [학습 시작]을 다시 실행하세요.")
 
-    # ---------- 학습
     def on_train(self):
         ok_files = list_images(self.var_ok.get().strip())
         ng_files = list_images(self.var_ng.get().strip())
@@ -563,7 +578,6 @@ class App:
         finally:
             self.q.put(("busy", False))
 
-    # ---------- 판정
     def on_judge(self):
         files = filedialog.askopenfilenames(title="판정할 사진 선택 (여러 장 가능)",
                                             filetypes=[("Images", "*.jpg *.jpeg *.png")])
@@ -571,7 +585,7 @@ class App:
             return
         if self.cfg.get("ref_theta_deg") is None:
             if not messagebox.askyesno("학습 필요", "아직 규칙 보정(학습)이 되어 있지 않습니다.\n"
-                                                  "그래도 현재 기본값으로 판정할까요?"):
+                                                 "그래도 현재 기본값으로 판정할까요?"):
                 return
         out_root = self.var_out.get().strip() or DEFAULT_OUT
         self.tree.delete(*self.tree.get_children())
@@ -597,10 +611,10 @@ class App:
                 else:
                     res = self.judge.judge(img)
 
-                dst_dir = os.path.join(out_root, res["verdict"], day)       # OK/2026-10-08, NG/2026-10-08
+                dst_dir = os.path.join(out_root, res["verdict"], day)
                 os.makedirs(dst_dir, exist_ok=True)
                 try:
-                    shutil.copy2(f, unique_path(os.path.join(dst_dir, name)))   # 원본 파일명 그대로
+                    shutil.copy2(f, unique_path(os.path.join(dst_dir, name)))
                 except Exception as e:
                     self.log(f"저장 실패 {name}: {e}")
 
@@ -612,13 +626,12 @@ class App:
             write_excel(xlsx, rows)
             n_ok = sum(1 for _, v in rows if v == "OK")
             self.log(f"== 판정 완료: OK {n_ok} / NG {len(rows) - n_ok} ==")
-            self.log(f"사진 저장: {out_root}\\(OK|NG)\\{day}\\  |  엑셀: {xlsx}")
+            self.log(f"사진 저장: {out_root}\\{'OK|NG'}\\{day}\\  |  엑셀: {xlsx}")
         except Exception as e:
             self.log(f"오류: {e}")
         finally:
             self.q.put(("busy", False))
 
-    # ---------- 미리보기
     def on_select(self, event=None):
         sel = self.tree.selection()
         if not sel:
